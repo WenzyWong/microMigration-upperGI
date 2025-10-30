@@ -1,4 +1,4 @@
-#' Calculate and visualize beta diversity using PCoA
+#' Calculate and visualize beta diversity using PCoA with top density plot
 #'
 #' @param abundance_list A named list of abundance matrices (genes/features in rows, samples in columns)
 #' @param colors A vector of colors for each group (optional, will use default palette if not provided)
@@ -7,12 +7,18 @@
 #' @param ellipse_alpha Alpha transparency for ellipses (default: 0.05)
 #' @param point_size Size of points (default: 0.7)
 #' @param line_width Width of connecting lines to centroids (default: 0.2)
+#' @param show_density Logical, whether to show top density plot (default: TRUE)
+#' @param density_alpha Alpha transparency for density fills (default: 0.05)
+#' @param density_linewidth Line width for density curves (default: 1)
+#' @param legend_position Position of legend: "right" (default), "top", "bottom", "left", or "none"
 #' @param output_file Optional file path to save the plot (default: NULL)
-#' @param plot_width Width of output plot in inches (default: 3)
-#' @param plot_height Height of output plot in inches (default: 3.4)
+#' @param plot_width Width of output plot in inches (default: 5)
+#' @param plot_height Height of output plot in inches (default: 5)
 #'
 #' @return A list containing:
-#'   - plot: ggplot object
+#'   - plot: Combined ggplot object
+#'   - main_plot: Main PCoA plot
+#'   - density_plot: Density plot
 #'   - pcoa_result: PCoA results from ape::pcoa
 #'   - distance_matrix: Distance matrix
 #'   - plot_data: Data frame used for plotting
@@ -21,6 +27,7 @@
 #' result <- plot_beta_diversity(
 #'   abundance_list = list(AEG = cpm_aeg, ESCC = cpm_escc, STAD = cpm_gc),
 #'   colors = c("#485682", "#60AB9E", "#5C8447"),
+#'   show_density = TRUE,
 #'   output_file = "beta_diversity.pdf"
 #' )
 #' 
@@ -31,14 +38,21 @@ plot_beta_diversity <- function(abundance_list,
                                 ellipse_alpha = 0.05,
                                 point_size = 0.7,
                                 line_width = 0.2,
+                                show_density = TRUE,
+                                density_alpha = 0.05,
+                                density_linewidth = 1,
+                                legend_position = "right",
                                 output_file = NULL,
-                                plot_width = 3,
-                                plot_height = 3.4) {
+                                plot_width = 5,
+                                plot_height = 5) {
   
   # Load required libraries
   require(vegan)
   require(ape)
   require(ggplot2)
+  if (show_density) {
+    require(cowplot)
+  }
   
   # Input validation
   if (!is.list(abundance_list) || length(abundance_list) < 2) {
@@ -115,8 +129,11 @@ plot_beta_diversity <- function(abundance_list,
   plot_data$centroid_x <- centroid_data$X[match(plot_data$Group, centroid_data$Group)]
   plot_data$centroid_y <- centroid_data$Y[match(plot_data$Group, centroid_data$Group)]
   
-  # Create plot
-  p <- ggplot(plot_data, aes(x = Axis.1, y = Axis.2, color = Group)) +
+  # Determine legend direction based on position
+  legend_direction <- ifelse(legend_position %in% c("top", "bottom"), "horizontal", "vertical")
+  
+  # Create main plot
+  p_main <- ggplot(plot_data, aes(x = Axis.1, y = Axis.2, color = Group)) +
     geom_point(size = point_size) +
     geom_segment(aes(x = Axis.1, xend = centroid_x,
                      y = Axis.2, yend = centroid_y),
@@ -130,20 +147,142 @@ plot_beta_diversity <- function(abundance_list,
     stat_ellipse(geom = "polygon", level = ellipse_level, alpha = ellipse_alpha) +
     theme_classic() +
     theme(axis.text = element_text(colour = 1),
-          legend.position = "top",
-          legend.direction = "horizontal")
+          legend.position = legend_position,
+          legend.direction = legend_direction)
+  
+  # Create density plot if requested
+  if (show_density) {
+    # Get x-axis limits from main plot
+    x_limits <- layer_scales(p_main)$x$range$range
+    
+    # Top density plot (PCoA1 only)
+    p_density <- ggplot(plot_data, aes(x = Axis.1, fill = Group, color = Group)) +
+      geom_density(alpha = density_alpha, linewidth = density_linewidth) +
+      scale_fill_manual(values = setNames(colors, group_names)) +
+      scale_color_manual(values = setNames(colors, group_names)) +
+      scale_x_continuous(limits = x_limits, expand = c(0, 0)) +
+      labs(y = "Density") +
+      theme_classic() +
+      theme(
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.text.y = element_text(colour = 1),
+        legend.position = "none",
+        plot.margin = margin(5, 5, 0, 5)
+      )
+    
+    # Remove title from main plot for combined layout
+    p_main_adjusted <- p_main + 
+      labs(title = NULL) +
+      theme(
+        legend.position = "none",
+        plot.margin = margin(0, 5, 5, 5)
+      )
+    
+    # Extract legend with specified direction
+    legend <- suppressWarnings(
+      get_legend(
+        p_main + 
+          theme(
+            legend.position = legend_position,
+            legend.direction = legend_direction
+          )
+      )
+    )
+    # Combine density and main plots vertically
+    p_combined <- plot_grid(
+      p_density,
+      p_main_adjusted,
+      ncol = 1,
+      align = "v",
+      axis = "lr",
+      rel_heights = c(0.8, 3)
+    )
+    
+    # Add title
+    title <- ggdraw() + 
+      draw_label(
+        paste("PCoA:", tools::toTitleCase(method), "Distance"),
+        fontface = 'bold',
+        x = 0,
+        hjust = 0,
+        size = 11
+      ) +
+      theme(
+        plot.margin = margin(5, 5, 0, 5)
+      )
+    
+    # Combine title with plots
+    p_with_title <- plot_grid(
+      title,
+      p_combined,
+      ncol = 1,
+      rel_heights = c(0.1, 1)
+    )
+    
+    # Add legend based on position
+    if (legend_position == "right") {
+      p_final <- plot_grid(
+        p_with_title,
+        legend,
+        ncol = 2,
+        rel_widths = c(1, 0.15)
+      )
+    } else if (legend_position == "left") {
+      p_final <- plot_grid(
+        legend,
+        p_with_title,
+        ncol = 2,
+        rel_widths = c(0.15, 1)
+      )
+    } else if (legend_position == "top") {
+      p_final <- plot_grid(
+        legend,
+        p_combined,
+        ncol = 1,
+        rel_heights = c(0.1, 1)
+      )
+      # Add title separately
+      p_final <- plot_grid(
+        title,
+        p_final,
+        ncol = 1,
+        rel_heights = c(0.1, 1)
+      )
+    } else if (legend_position == "bottom") {
+      p_final <- plot_grid(
+        p_with_title,
+        legend,
+        ncol = 1,
+        rel_heights = c(1, 0.1)
+      )
+    } else {
+      # legend_position == "none"
+      p_final <- p_with_title
+    }
+    
+    final_plot <- p_final
+    density_plot <- p_density
+  } else {
+    final_plot <- p_main
+    density_plot <- NULL
+  }
   
   # Save plot if output file is specified
   if (!is.null(output_file)) {
     pdf(output_file, height = plot_height, width = plot_width)
-    print(p)
+    print(final_plot)
     dev.off()
     message(paste("Plot saved to:", output_file))
   }
   
   # Return results
   return(list(
-    plot = p,
+    plot = final_plot,
+    main_plot = p_main,
+    density_plot = density_plot,
     pcoa_result = pcoa_result,
     distance_matrix = dist_mtx,
     plot_data = plot_data,
@@ -151,19 +290,30 @@ plot_beta_diversity <- function(abundance_list,
   ))
 }
 
-# Example usage with your original data:
+# Example usage with your original data (default: legend on right, vertical):
 # result <- plot_beta_diversity(
 #   abundance_list = list(AEG = cpm_aeg, ESCC = cpm_escc, STAD = cpm_gc),
 #   colors = c("#485682", "#60AB9E", "#5C8447"),
+#   show_density = TRUE,
 #   output_file = file.path(DIR_RES, "B_beta_diversity_among_cancer.pdf")
 # )
 # 
-# # Access the plot
-# print(result$plot)
-# 
-# # Example with 4 groups:
+# # With legend on top (horizontal):
 # result2 <- plot_beta_diversity(
-#   abundance_list = list(Group1 = mat1, Group2 = mat2, Group3 = mat3, Group4 = mat4),
-#   colors = c("red", "blue", "green", "purple"),
-#   method = "jaccard"
+#   abundance_list = list(AEG = cpm_aeg, ESCC = cpm_escc, STAD = cpm_gc),
+#   colors = c("#485682", "#60AB9E", "#5C8447"),
+#   show_density = TRUE,
+#   legend_position = "top",
+#   output_file = file.path(DIR_RES, "B_beta_diversity_top_legend.pdf")
+# )
+# 
+# # Without density plot (original style):
+# result3 <- plot_beta_diversity(
+#   abundance_list = list(AEG = cpm_aeg, ESCC = cpm_escc, STAD = cpm_gc),
+#   colors = c("#485682", "#60AB9E", "#5C8447"),
+#   show_density = FALSE,
+#   legend_position = "top",
+#   output_file = file.path(DIR_RES, "B_beta_diversity_simple.pdf"),
+#   plot_width = 3,
+#   plot_height = 3.4
 # )
